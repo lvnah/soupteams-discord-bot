@@ -42,20 +42,47 @@ client.once('ready', () => {
     console.log(`Bot logged in (ready) as ${client.user.tag}!`);
 });
 
-// Automatic assignment of the "Default" role
+// Helper function to send logs to a specific channel named "logs"
+async function sendLog(guild, embed) {
+    try {
+        const logChannel = guild.channels.cache.find(c => c.name === 'logs' && c.type === ChannelType.GuildText);
+        if (logChannel) {
+            await logChannel.send({ embeds: [embed] });
+        }
+    } catch (error) {
+        console.error("Error sending log:", error);
+    }
+}
+
+// Automatic assignment of the "Default" role & Logs
 client.on('guildMemberAdd', async member => {
     try {
         const defaultRole = member.guild.roles.cache.find(role => role.name === 'Default');
         if (defaultRole) {
             await member.roles.add(defaultRole);
-            console.log(`'Default' role assigned to ${member.user.tag}`);
         }
+
+        const logEmbed = new EmbedBuilder()
+            .setTitle('📥 Member Joined')
+            .setDescription(`**${member.user.tag}** (<@${member.user.id}>) has joined the server.`)
+            .setColor(0x2ECC71)
+            .setTimestamp();
+        await sendLog(member.guild, logEmbed);
     } catch (error) {
-        console.error("Error assigning default role:", error);
+        console.error("Error on member add:", error);
     }
 });
 
-// Dynamic nickname update
+client.on('guildMemberRemove', async member => {
+    const logEmbed = new EmbedBuilder()
+        .setTitle('📤 Member Left')
+        .setDescription(`**${member.user.tag}** has left the server.`)
+        .setColor(0xE74C3C)
+        .setTimestamp();
+    await sendLog(member.guild, logEmbed);
+});
+
+// Dynamic nickname update & Logs
 client.on('guildMemberUpdate', async (oldMember, newMember) => {
     try {
         const oldRoles = oldMember.roles.cache;
@@ -68,13 +95,40 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
                 const newNickname = `[${highestRole.name}] ${baseName}`;
                 if (newMember.nickname !== newNickname) {
                     await newMember.setNickname(newNickname);
-                    console.log(`Nickname updated for ${baseName}: ${newNickname}`);
+
+                    const logEmbed = new EmbedBuilder()
+                        .setTitle('✏️ Nickname Updated')
+                        .setDescription(`User: <@${newMember.id}>\nNew Nickname: **${newNickname}**`)
+                        .setColor(0xF1C40F)
+                        .setTimestamp();
+                    await sendLog(newMember.guild, logEmbed);
                 }
             }
         }
     } catch (error) {
         console.error("Error updating nickname:", error);
     }
+});
+
+// Message Logs (Deleted & Edited)
+client.on('messageDelete', async message => {
+    if (!message.guild || message.author?.bot) return;
+    const logEmbed = new EmbedBuilder()
+        .setTitle('🗑️ Message Deleted')
+        .setDescription(`**Author:** <@${message.author.id}>\n**Channel:** <#${message.channel.id}>\n**Content:**\n> ${message.content || '[Embed or Attachment]'}`)
+        .setColor(0xE67E22)
+        .setTimestamp();
+    await sendLog(message.guild, logEmbed);
+});
+
+client.on('messageUpdate', async (oldMessage, newMessage) => {
+    if (!newMessage.guild || newMessage.author?.bot || oldMessage.content === newMessage.content) return;
+    const logEmbed = new EmbedBuilder()
+        .setTitle('✏️ Message Edited')
+        .setDescription(`**Author:** <@${newMessage.author.id}>\n**Channel:** <#${newMessage.channel.id}>\n**Before:**\n> ${oldMessage.content}\n**After:**\n> ${newMessage.content}`)
+        .setColor(0x3498DB)
+        .setTimestamp();
+    await sendLog(newMessage.guild, logEmbed);
 });
 
 // Administrator commands (!rules, !informations, !setup-ticket)
@@ -98,7 +152,7 @@ client.on('messageCreate', async message => {
             );
 
         await message.channel.send({ embeds: [rulesEmbed] });
-        await message.delete().catch(() => {});
+        await message.delete().catch(() => { });
     }
 
     if (message.content === '!informations') {
@@ -119,10 +173,9 @@ client.on('messageCreate', async message => {
             .setColor(0xE74C3C);
 
         await message.channel.send({ embeds: [infoEmbed] });
-        await message.delete().catch(() => {});
+        await message.delete().catch(() => { });
     }
 
-    // Command to setup the ticket panel in the support channel
     if (message.content === '!setup-ticket') {
         if (!hasFounderRole) return message.reply({ content: "❌ This command is restricted to **Founder**." });
 
@@ -136,13 +189,13 @@ client.on('messageCreate', async message => {
         );
 
         await message.channel.send({ embeds: [ticketEmbed], components: [row] });
-        await message.delete().catch(() => {});
+        await message.delete().catch(() => { });
     }
 });
 
-// Handling Interactions (Buttons and Modals)
+// Handling Interactions (Buttons, Modals)
 client.on('interactionCreate', async interaction => {
-    // 1. When clicking the "Open a Ticket" button -> Open a Modal window
+    // 1. Open Ticket Modal
     if (interaction.isButton() && interaction.customId === 'open_ticket_modal') {
         const modal = new ModalBuilder()
             .setCustomId('ticket_reason_modal')
@@ -161,28 +214,25 @@ client.on('interactionCreate', async interaction => {
         await interaction.showModal(modal);
     }
 
-    // 2. When the player submits the modal form
+    // 2. Submit Ticket Modal & Create Private Channel
     if (interaction.isModalSubmit() && interaction.customId === 'ticket_reason_modal') {
         const reason = interaction.fields.getTextInputValue('ticket_reason_input');
         const guild = interaction.guild;
         const user = interaction.user;
 
-        // Respond ephemerally to validate submission
         await interaction.reply({ content: `✅ Your ticket has been created successfully!`, ephemeral: true });
 
-        // Search for Staff roles ("Founder", "Mod", "Helper")
         const founderRole = guild.roles.cache.find(r => r.name === 'Founder');
         const modRole = guild.roles.cache.find(r => r.name === 'Mod');
         const helperRole = guild.roles.cache.find(r => r.name === 'Helper');
 
-        // Configure permissions for the new private channel
         const permissionOverwrites = [
             {
-                id: guild.id, // @everyone
+                id: guild.id,
                 deny: [PermissionsBitField.Flags.ViewChannel],
             },
             {
-                id: user.id, // The player opening the ticket
+                id: user.id,
                 allow: [
                     PermissionsBitField.Flags.ViewChannel,
                     PermissionsBitField.Flags.SendMessages,
@@ -191,7 +241,6 @@ client.on('interactionCreate', async interaction => {
             },
         ];
 
-        // Add permissions to staff roles if they exist
         [founderRole, modRole, helperRole].forEach(role => {
             if (role) {
                 permissionOverwrites.push({
@@ -205,7 +254,6 @@ client.on('interactionCreate', async interaction => {
             }
         });
 
-        // Create the channel in the current category
         const ticketChannel = await guild.channels.create({
             name: `ticket-${user.username}`,
             type: ChannelType.GuildText,
@@ -213,17 +261,34 @@ client.on('interactionCreate', async interaction => {
             permissionOverwrites: permissionOverwrites,
         });
 
-        // Send the summary message inside the private channel
         const privateEmbed = new EmbedBuilder()
             .setTitle(`🎫 Ticket from ${user.username}`)
             .setDescription(`**Provided Reason:**\n> ${reason}`)
             .setColor(0x3498DB)
             .setTimestamp();
 
+        // Add a close button inside the private ticket channel
+        const closeRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒')
+        );
+
         await ticketChannel.send({
             content: `Hello <@${user.id}>, here is your support channel! The staff team (<@&${founderRole?.id}>, <@&${modRole?.id}>, <@&${helperRole?.id}>) will get back to you shortly.`,
-            embeds: [privateEmbed]
+            embeds: [privateEmbed],
+            components: [closeRow]
         });
+    }
+
+    // 3. Close Ticket Button
+    if (interaction.isButton() && interaction.customId === 'close_ticket') {
+        await interaction.reply({ content: `🔒 Closing this ticket in 3 seconds...`, ephemeral: false });
+        setTimeout(async () => {
+            try {
+                await interaction.channel.delete();
+            } catch (err) {
+                console.error("Error deleting ticket channel:", err);
+            }
+        }, 3000);
     }
 });
 
